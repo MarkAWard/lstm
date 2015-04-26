@@ -273,7 +273,7 @@ end
 
 --function main()
 if not use_cpu then
-  g_init_gpu(arg)
+  g_init_gpu(params.gpu_device)
 end
 state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
 state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
