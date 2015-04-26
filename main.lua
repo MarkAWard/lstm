@@ -5,16 +5,24 @@
 ----  This source code is licensed under the Apache 2 license found in the
 ----  LICENSE file in the root directory of this source tree. 
 ----
+use_cpu = false
 ok,cunn = pcall(require, 'fbcunn')
 if not ok then
-    ok,cunn = pcall(require,'cunn')
-    if ok then
-        print("warning: fbcunn not found. Falling back to cunn") 
-        LookupTable = nn.LookupTable
+  ok,cunn = pcall(require,'cunn')
+  if ok then
+    print("warning: fbcunn not found. Falling back to cunn") 
+    LookupTable = nn.LookupTable
+  else
+    print("Could not find cunn or fbcunn. Falling back to CPU")
+    ok, nn = pcall(require, 'nn')
+    if not ok then
+      print("Could not find nn. Cannot continue, exiting")
+      os.exit()
     else
-        print("Could not find cunn or fbcunn. Either is required")
-        os.exit()
+      use_cpu = true
+      LookupTable = nn.LookupTable
     end
+  end
 else
     deviceParams = cutorch.getDeviceProperties(1)
     cudaComputeCapability = deviceParams.major + deviceParams.minor/10
@@ -23,6 +31,31 @@ end
 require('nngraph')
 require('base')
 ptb = require('data')
+
+cmd = torch.CmdLine()
+cmd:text()
+cmd:text('Options:')
+cmd:text()
+cmd:option('-layers', 2)
+cmd:option('-dropout', 0)
+cmd:text()
+cmd:option('-vocab_size', 10000)
+cmd:option('-seq_length', 20)
+cmd:option('-rnn_size', 200)
+cmd:option('-batch_size', 20)
+cmd:text()
+cmd:option('-init_weight', 0.1)
+cmd:option('-lr', 1)
+cmd:option('-decay', 2)
+cmd:text()
+cmd:option('-max_epoch', 4)
+cmd:option('-max_max_epoch', 13)
+cmd:option('-max_grad_norm', 5)
+cmd:text()
+cmd:option('-gpu_device', 2)
+cmd:text()
+
+params = cmd:parse(arg or {})
 
 -- Train 1 day and gives 82 perplexity.
 --[[
@@ -50,17 +83,16 @@ params = {batch_size=20,
                 init_weight=0.1,
                 lr=1,
                 vocab_size=10000,
-                max_epoch=5,
-                max_max_epoch=40,
-                max_grad_norm=7}
+                max_epoch=4,
+                max_max_epoch=13,
+                max_grad_norm=5,
+                gpu_device=2}
+]]--
 
 function transfer_data(x)
-  return x:cuda()
+  if use_cpu then return x 
+  else return x:cuda() end
 end
-
---local state_train, state_valid, state_test
-model = {}
---local paramx, paramdx
 
 function lstm(i, prev_c, prev_h)
   local function new_input_sum()
@@ -102,10 +134,13 @@ function create_network()
   local pred             = nn.LogSoftMax()(h2y(dropped))
   local err              = nn.ClassNLLCriterion()({pred, y})
   local module           = nn.gModule({x, y, prev_s},
-                                      {err, nn.Identity()(next_s)})
+                                      {err, nn.Identity()(next_s), pred})
   module:getParameters():uniform(-params.init_weight, params.init_weight)
   return transfer_data(module)
 end
+
+
+model = {}
 
 function setup()
   print("Creating a RNN LSTM network.")
@@ -154,7 +189,7 @@ function fp(state)
     local x = state.data[state.pos]
     local y = state.data[state.pos + 1]
     local s = model.s[i - 1]
-    model.err[i], model.s[i] = unpack(model.rnns[i]:forward({x, y, s}))
+    model.err[i], model.s[i], _ = unpack(model.rnns[i]:forward({x, y, s}))
     state.pos = state.pos + 1
   end
   g_replace_table(model.start_s, model.s[params.seq_length])
@@ -164,6 +199,7 @@ end
 function bp(state)
   paramdx:zero()
   reset_ds()
+  local pred_zeros = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
   for i = params.seq_length, 1, -1 do
     state.pos = state.pos - 1
     local x = state.data[state.pos]
@@ -171,9 +207,11 @@ function bp(state)
     local s = model.s[i - 1]
     local derr = transfer_data(torch.ones(1))
     local tmp = model.rnns[i]:backward({x, y, s},
-                                       {derr, model.ds})[3]
+                                       {derr, model.ds, pred_zeros})[3]
     g_replace_table(model.ds, tmp)
-    cutorch.synchronize()
+    if not use_cpu then
+      cutorch.synchronize()
+    end
   end
   state.pos = state.pos + params.seq_length
   model.norm_dw = paramdx:norm()
@@ -182,6 +220,23 @@ function bp(state)
     paramdx:mul(shrink_factor)
   end
   paramx:add(paramdx:mul(-params.lr))
+end
+
+function complete_sequence(state)
+  reset_state(state)
+  g_disable_dropout(model.rnns)
+  g_replace_table(model.s[0], model.start_s)
+  local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
+  for i = 1, state.total_length-1 do
+    local x = state.data[i]
+    local y = state.data[i+1]
+    err, model.s[1], pred = unpack(model.rnns[i]:forward({x, y, model.s[0]}))
+    g_replace_table(model.s[0], model.s[1])
+    if i >= state.n_given then
+      _, idx = pred:max(2)
+      state.data[i+1]:fill(idx[1][1])
+    end
+  end
 end
 
 function run_valid()
@@ -215,7 +270,9 @@ function run_test()
 end
 
 --function main()
-g_init_gpu(arg)
+if not use_cpu then
+  g_init_gpu(arg)
+end
 state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
 state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
 state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
@@ -226,46 +283,48 @@ for _, state in pairs(states) do
  reset_state(state)
 end
 setup()
-step = 0
-epoch = 0
-total_cases = 0
-beginning_time = torch.tic()
-start_time = torch.tic()
-print("Starting training.")
-words_per_step = params.seq_length * params.batch_size
-epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
---perps
-while epoch < params.max_max_epoch do
- perp = fp(state_train)
- if perps == nil then
-   perps = torch.zeros(epoch_size):add(perp)
- end
- perps[step % epoch_size + 1] = perp
- step = step + 1
- bp(state_train)
- total_cases = total_cases + params.seq_length * params.batch_size
- epoch = step / epoch_size
- if step % torch.round(epoch_size / 10) == 10 then
-   wps = torch.floor(total_cases / torch.toc(start_time))
-   since_beginning = g_d(torch.toc(beginning_time) / 60)
-   print('epoch = ' .. g_f3(epoch) ..
-         ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
-         ', wps = ' .. wps ..
-         ', dw:norm() = ' .. g_f3(model.norm_dw) ..
-         ', lr = ' ..  g_f3(params.lr) ..
-         ', since beginning = ' .. since_beginning .. ' mins.')
- end
- if step % epoch_size == 0 then
-   run_valid()
-   if epoch > params.max_epoch then
-       params.lr = params.lr / params.decay
-   end
- end
- if step % 33 == 0 then
-   cutorch.synchronize()
-   collectgarbage()
- end
-end
-run_test()
-print("Training is over.")
---end
+-- step = 0
+-- epoch = 0
+-- total_cases = 0
+-- beginning_time = torch.tic()
+-- start_time = torch.tic()
+-- print("Starting training.")
+-- words_per_step = params.seq_length * params.batch_size
+-- epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
+-- --perps
+-- while epoch < params.max_max_epoch do
+--  perp = fp(state_train)
+--  if perps == nil then
+--    perps = torch.zeros(epoch_size):add(perp)
+--  end
+--  perps[step % epoch_size + 1] = perp
+--  step = step + 1
+--  bp(state_train)
+--  total_cases = total_cases + params.seq_length * params.batch_size
+--  epoch = step / epoch_size
+--  if step % torch.round(epoch_size / 10) == 10 then
+--    wps = torch.floor(total_cases / torch.toc(start_time))
+--    since_beginning = g_d(torch.toc(beginning_time) / 60)
+--    print('epoch = ' .. g_f3(epoch) ..
+--          ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
+--          ', wps = ' .. wps ..
+--          ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+--          ', lr = ' ..  g_f3(params.lr) ..
+--          ', since beginning = ' .. since_beginning .. ' mins.')
+--  end
+--  if step % epoch_size == 0 then
+--    run_valid()
+--    if epoch > params.max_epoch then
+--        params.lr = params.lr / params.decay
+--    end
+--  end
+--  if step % 33 == 0 then
+--    if not use_cpu then 
+--      cutorch.synchronize()
+--     end
+--    collectgarbage()
+--  end
+-- end
+-- run_test()
+-- print("Training is over.")
+-- --end
