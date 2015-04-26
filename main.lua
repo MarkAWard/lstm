@@ -38,13 +38,13 @@ cmd:text('Options:')
 cmd:text()
 cmd:option('-layers', 2)
 cmd:option('-dropout', 0)
+cmd:option('-init_weight', 0.1)
 cmd:text()
 cmd:option('-vocab_size', 10000)
 cmd:option('-seq_length', 20)
 cmd:option('-rnn_size', 200)
-cmd:option('-batch_size', 20)
 cmd:text()
-cmd:option('-init_weight', 0.1)
+cmd:option('-batch_size', 20)
 cmd:option('-lr', 1)
 cmd:option('-decay', 2)
 cmd:text()
@@ -52,7 +52,7 @@ cmd:option('-max_epoch', 4)
 cmd:option('-max_max_epoch', 13)
 cmd:option('-max_grad_norm', 5)
 cmd:text()
-cmd:option('-gpu_device', 2)
+cmd:option('-gpu_device', 4)
 cmd:text()
 
 params = cmd:parse(arg or {})
@@ -238,6 +238,7 @@ function complete_sequence(state)
       state.data[i+1]:fill(idx[1][1])
     end
   end
+  g_enable_dropout(model.rnns)
 end
 
 function run_valid()
@@ -262,7 +263,7 @@ function run_test()
     local x = state_test.data[i]
     local y = state_test.data[i + 1]
     local s = model.s[i - 1]
-    perp_tmp, model.s[1] = unpack(model.rnns[1]:forward({x, y, model.s[0]}))
+    perp_tmp, model.s[1], _ = unpack(model.rnns[1]:forward({x, y, model.s[0]}))
     perp = perp + perp_tmp[1]
     g_replace_table(model.s[0], model.s[1])
   end
@@ -284,48 +285,48 @@ for _, state in pairs(states) do
  reset_state(state)
 end
 setup()
--- step = 0
--- epoch = 0
--- total_cases = 0
--- beginning_time = torch.tic()
--- start_time = torch.tic()
--- print("Starting training.")
--- words_per_step = params.seq_length * params.batch_size
--- epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
--- --perps
--- while epoch < params.max_max_epoch do
---  perp = fp(state_train)
---  if perps == nil then
---    perps = torch.zeros(epoch_size):add(perp)
---  end
---  perps[step % epoch_size + 1] = perp
---  step = step + 1
---  bp(state_train)
---  total_cases = total_cases + params.seq_length * params.batch_size
---  epoch = step / epoch_size
---  if step % torch.round(epoch_size / 10) == 10 then
---    wps = torch.floor(total_cases / torch.toc(start_time))
---    since_beginning = g_d(torch.toc(beginning_time) / 60)
---    print('epoch = ' .. g_f3(epoch) ..
---          ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
---          ', wps = ' .. wps ..
---          ', dw:norm() = ' .. g_f3(model.norm_dw) ..
---          ', lr = ' ..  g_f3(params.lr) ..
---          ', since beginning = ' .. since_beginning .. ' mins.')
---  end
---  if step % epoch_size == 0 then
---    run_valid()
---    if epoch > params.max_epoch then
---        params.lr = params.lr / params.decay
---    end
---  end
---  if step % 33 == 0 then
---    if not use_cpu then 
---      cutorch.synchronize()
---     end
---    collectgarbage()
---  end
--- end
--- run_test()
--- print("Training is over.")
--- --end
+step = 0
+epoch = 0
+total_cases = 0
+beginning_time = torch.tic()
+start_time = torch.tic()
+print("Starting training.")
+words_per_step = params.seq_length * params.batch_size
+epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
+--perps
+while epoch < params.max_max_epoch do
+ perp = fp(state_train)
+ if perps == nil then
+   perps = torch.zeros(epoch_size):add(perp)
+ end
+ perps[step % epoch_size + 1] = perp
+ step = step + 1
+ bp(state_train)
+ total_cases = total_cases + params.seq_length * params.batch_size
+ epoch = step / epoch_size
+ if step % torch.round(epoch_size / 10) == 10 then
+   wps = torch.floor(total_cases / torch.toc(start_time))
+   since_beginning = g_d(torch.toc(beginning_time) / 60)
+   print('epoch = ' .. g_f3(epoch) ..
+         ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
+         ', wps = ' .. wps ..
+         ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+         ', lr = ' ..  g_f3(params.lr) ..
+         ', since beginning = ' .. since_beginning .. ' mins.')
+ end
+ if step % epoch_size == 0 then
+   run_valid()
+   if epoch > params.max_epoch then
+       params.lr = params.lr / params.decay
+   end
+ end
+ if step % 33 == 0 then
+   if not use_cpu then 
+     cutorch.synchronize()
+    end
+   collectgarbage()
+ end
+end
+run_test()
+print("Training is over.")
+--end
