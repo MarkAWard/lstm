@@ -5,16 +5,24 @@
 ----  This source code is licensed under the Apache 2 license found in the
 ----  LICENSE file in the root directory of this source tree. 
 ----
+use_cpu = false
 ok,cunn = pcall(require, 'fbcunn')
 if not ok then
-    ok,cunn = pcall(require,'cunn')
-    if ok then
-        print("warning: fbcunn not found. Falling back to cunn") 
-        LookupTable = nn.LookupTable
+  ok,cunn = pcall(require,'cunn')
+  if ok then
+    print("warning: fbcunn not found. Falling back to cunn") 
+    LookupTable = nn.LookupTable
+  else
+    print("Could not find cunn or fbcunn. Falling back to CPU")
+    ok, nn = pcall(require, 'nn')
+    if not ok then
+      print("Could not find nn. Cannot continue, exiting")
+      os.exit()
     else
-        print("Could not find cunn or fbcunn. Either is required")
-        os.exit()
+      use_cpu = true
+      LookupTable = nn.LookupTable
     end
+  end
 else
     deviceParams = cutorch.getDeviceProperties(1)
     cudaComputeCapability = deviceParams.major + deviceParams.minor/10
@@ -23,6 +31,31 @@ end
 require('nngraph')
 require('base')
 ptb = require('data')
+
+cmd = torch.CmdLine()
+cmd:text()
+cmd:text('Options:')
+cmd:text()
+cmd:option('-layers', 2)
+cmd:option('-dropout', 0)
+cmd:text()
+cmd:option('-vocab_size', 10000)
+cmd:option('-seq_length', 20)
+cmd:option('-rnn_size', 200)
+cmd:option('-batch_size', 20)
+cmd:text()
+cmd:option('-init_weight', 0.1)
+cmd:option('-lr', 1)
+cmd:option('-decay', 2)
+cmd:text()
+cmd:option('-max_epoch', 4)
+cmd:option('-max_max_epoch', 13)
+cmd:option('-max_grad_norm', 5)
+cmd:text()
+cmd:option('-gpu_device', 2)
+cmd:text()
+
+params = cmd:parse(arg or {})
 
 -- Train 1 day and gives 82 perplexity.
 --[[
@@ -41,6 +74,7 @@ local params = {batch_size=20,
                ]]--
 
 -- Trains 1h and gives test 115 perplexity.
+--[[
 local params = {batch_size=20,
                 seq_length=20,
                 layers=2,
@@ -52,15 +86,14 @@ local params = {batch_size=20,
                 vocab_size=10000,
                 max_epoch=4,
                 max_max_epoch=13,
-                max_grad_norm=5}
+                max_grad_norm=5,
+                gpu_device=2}
+]]--
 
 function transfer_data(x)
-  return x:cuda()
+  if use_cpu then return x 
+  else return x:cuda() end
 end
-
---local state_train, state_valid, state_test
-model = {}
---local paramx, paramdx
 
 function lstm(i, prev_c, prev_h)
   local function new_input_sum()
@@ -102,10 +135,13 @@ function create_network()
   local pred             = nn.LogSoftMax()(h2y(dropped))
   local err              = nn.ClassNLLCriterion()({pred, y})
   local module           = nn.gModule({x, y, prev_s},
-                                      {err, nn.Identity()(next_s)})
+                                      {err, nn.Identity()(next_s), pred})
   module:getParameters():uniform(-params.init_weight, params.init_weight)
   return transfer_data(module)
 end
+
+
+model = {}
 
 function setup()
   print("Creating a RNN LSTM network.")
@@ -154,7 +190,7 @@ function fp(state)
     local x = state.data[state.pos]
     local y = state.data[state.pos + 1]
     local s = model.s[i - 1]
-    model.err[i], model.s[i] = unpack(model.rnns[i]:forward({x, y, s}))
+    model.err[i], model.s[i], _ = unpack(model.rnns[i]:forward({x, y, s}))
     state.pos = state.pos + 1
   end
   g_replace_table(model.start_s, model.s[params.seq_length])
@@ -164,6 +200,7 @@ end
 function bp(state)
   paramdx:zero()
   reset_ds()
+  local pred_zeros = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
   for i = params.seq_length, 1, -1 do
     state.pos = state.pos - 1
     local x = state.data[state.pos]
@@ -171,9 +208,11 @@ function bp(state)
     local s = model.s[i - 1]
     local derr = transfer_data(torch.ones(1))
     local tmp = model.rnns[i]:backward({x, y, s},
-                                       {derr, model.ds})[3]
+                                       {derr, model.ds, pred_zeros})[3]
     g_replace_table(model.ds, tmp)
-    cutorch.synchronize()
+    if not use_cpu then
+      cutorch.synchronize()
+    end
   end
   state.pos = state.pos + params.seq_length
   model.norm_dw = paramdx:norm()
@@ -215,7 +254,9 @@ function run_test()
 end
 
 --function main()
-g_init_gpu(arg)
+if not use_cpu then
+  g_init_gpu(arg)
+end
 state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
 state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
 state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
@@ -262,7 +303,9 @@ while epoch < params.max_max_epoch do
    end
  end
  if step % 33 == 0 then
-   cutorch.synchronize()
+   if not use_cpu then 
+     cutorch.synchronize()
+    end
    collectgarbage()
  end
 end
