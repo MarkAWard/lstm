@@ -69,7 +69,7 @@ end
 
 function g_init_gpu(args)
   local gpuidx = args
-  gpuidx = gpuidx[1] or 1
+  gpuidx = gpuidx[1] or 3
   print(string.format("Using %s-th gpu", gpuidx))
   cutorch.setDevice(gpuidx)
   g_make_deterministic(1)
