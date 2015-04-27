@@ -96,6 +96,7 @@ params = {batch_size=20,
                 gpu_device=2}
 ]]--
 
+-- alter for use with cpu
 function transfer_data(x)
   if use_cpu then return x:float()
   else return x:cuda() end
@@ -141,11 +142,13 @@ function create_network()
     local dropped          = nn.Dropout(params.dropout)(i[params.layers])
     local pred             = nn.LogSoftMax()(h2y(dropped))
     local err              = nn.ClassNLLCriterion()({pred, y})
+    -- also return the log probs from the model
     local module           = nn.gModule({x, y, prev_s},
                                         {err, nn.Identity()(next_s), pred})
     module:getParameters():uniform(-params.init_weight, params.init_weight)
     return transfer_data(module)
   else
+    -- load in a core_network if we are not traininng
     return torch.load(params.model)
   end
 end
@@ -199,6 +202,7 @@ function fp(state)
     local x = state.data[state.pos]
     local y = state.data[state.pos + 1]
     local s = model.s[i - 1]
+    -- three outputs, dont care about the third here
     model.err[i], model.s[i], _ = unpack(model.rnns[i]:forward({x, y, s}))
     state.pos = state.pos + 1
   end
@@ -216,6 +220,7 @@ function bp(state)
     local y = state.data[state.pos + 1]
     local s = model.s[i - 1]
     local derr = transfer_data(torch.ones(1))
+    -- add zeros for gradient wrt the probs 
     local tmp = model.rnns[i]:backward({x, y, s},
                                        {derr, model.ds, pred_zeros})[3]
     g_replace_table(model.ds, tmp)
@@ -259,6 +264,7 @@ function run_test()
     local x = state_test.data[i]
     local y = state_test.data[i + 1]
     local s = model.s[i - 1]
+    -- three outputs, dont care about the third here
     perp_tmp, model.s[1], _ = unpack(model.rnns[1]:forward({x, y, model.s[0]}))
     perp = perp + perp_tmp[1]
     g_replace_table(model.s[0], model.s[1])
@@ -267,6 +273,7 @@ function run_test()
   g_enable_dropout(model.rnns)
 end
 
+-- complete a sequence of words
 function complete_sequence(state)
   reset_state(state)
   g_replace_table(model.s[0], model.start_s)
@@ -283,6 +290,7 @@ function complete_sequence(state)
   end
 end
 
+-- read in a line and convert it to the state that the above function wants
 function convert_input()
   local line = io.read("*line")
   if line == nil then error({code="EOF"}) end
@@ -302,6 +310,7 @@ function convert_input()
   return state_query
 end
 
+-- IO loop for sentence completion
 function query_sentences()
   g_disable_dropout(model.rnns)
   while true do
@@ -328,6 +337,8 @@ function query_sentences()
   end
 end
 
+-- predict the next character in the sequence
+-- never reset the state variables
 function next_char(state)
   -- if state.pos > params.seq_length then
   --   reset_state(state)
@@ -340,6 +351,7 @@ function next_char(state)
   return pred[1]
 end
 
+-- read in a line / a single character
 function readline()
   local line = io.read("*line")
   if line == nil then error({code="EOF"}) end
@@ -349,13 +361,14 @@ function readline()
   return line
 end
 
+-- IO loop for predicting the next character
 function evaluate_chars()
   g_disable_dropout(model.rnns)
   state_chars = {}
   state_chars.data = transfer_data(torch.ones(2, params.batch_size))
   state_chars.pos = 1
   probs = transfer_data(torch.zeros(params.vocab_size))
-  io.write("OK GO")
+  io.write("OK GO\n")
   while true do
     io.flush()
     local ok, line = pcall(readline)
@@ -374,7 +387,8 @@ function evaluate_chars()
       idx = ptb.vocab_map[line[1]]
       state_chars.data[1]:fill(idx)
       probs = next_char(state_chars)
-      for i = 1, #probs do 
+      probs = normalize(probs)
+      for i = 1, params.vocab_size do 
         io.write(probs[i] .. ' ')
       end
       io.write('\n')
@@ -382,6 +396,9 @@ function evaluate_chars()
   end 
 end
 
+function normalize(x)
+  return torch.log( torch.exp(x) / torch.exp(x):sum() )
+end
 
 if not use_cpu then
   g_init_gpu(params.gpu_device)
