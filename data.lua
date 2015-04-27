@@ -14,10 +14,10 @@ local ptb_path = "./data/"
 local trainfn = ptb_path .. "ptb.train.txt"
 local testfn  = ptb_path .. "ptb.test.txt"
 local validfn = ptb_path .. "ptb.valid.txt"
---[[
-local trainfn = ptb_path .. "ptb.char.train.txt"
-local validfn = ptb_path .. "ptb.char.valid.txt"
---]]
+
+local char_trainfn = ptb_path .. "ptb.char.train.txt"
+local char_validfn = ptb_path .. "ptb.char.valid.txt"
+
 
 local vocab_idx = 0
 local vocab_map = {}
@@ -62,9 +62,11 @@ local function load_data(fname)
 end
 
 local function traindataset(batch_size, char)
-   local x = load_data(trainfn)
-   x = replicate(x, batch_size)
-   return x
+  if not char then fn = trainfn
+  else fn = char_trainfn end
+  local x = load_data(fn)
+  x = replicate(x, batch_size)
+  return x
 end
 
 -- Intentionally we repeat dimensions without offseting.
@@ -77,10 +79,12 @@ local function testdataset(batch_size)
    end
 end
 
-local function validdataset(batch_size)
-   local x = load_data(validfn)
-   x = replicate(x, batch_size)
-   return x
+local function validdataset(batch_size, char)
+  if not char then fn = validfn
+  else fn = char_validfn end
+  local x = load_data(fn)
+  x = replicate(x, batch_size)
+  return x
 end
 
 return {traindataset=traindataset,
