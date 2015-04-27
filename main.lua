@@ -94,7 +94,7 @@ params = {batch_size=20,
 ]]--
 
 function transfer_data(x)
-  if use_cpu then return x 
+  if use_cpu then return x:float()
   else return x:cuda() end
 end
 
@@ -117,60 +117,59 @@ function lstm(i, prev_c, prev_h)
 end
 
 function create_network()
-  local x                = nn.Identity()()
-  local y                = nn.Identity()()
-  local prev_s           = nn.Identity()()
-  local i                = {[0] = LookupTable(params.vocab_size,
-                                                    params.rnn_size)(x)}
-  local next_s           = {}
-  local split         = {prev_s:split(2 * params.layers)}
-  for layer_idx = 1, params.layers do
-    local prev_c         = split[2 * layer_idx - 1]
-    local prev_h         = split[2 * layer_idx]
-    local dropped        = nn.Dropout(params.dropout)(i[layer_idx - 1])
-    local next_c, next_h = lstm(dropped, prev_c, prev_h)
-    table.insert(next_s, next_c)
-    table.insert(next_s, next_h)
-    i[layer_idx] = next_h
+  if params.mode == 'train' then
+    local x                = nn.Identity()()
+    local y                = nn.Identity()()
+    local prev_s           = nn.Identity()()
+    local i                = {[0] = LookupTable(params.vocab_size,
+                                                      params.rnn_size)(x)}
+    local next_s           = {}
+    local split         = {prev_s:split(2 * params.layers)}
+    for layer_idx = 1, params.layers do
+      local prev_c         = split[2 * layer_idx - 1]
+      local prev_h         = split[2 * layer_idx]
+      local dropped        = nn.Dropout(params.dropout)(i[layer_idx - 1])
+      local next_c, next_h = lstm(dropped, prev_c, prev_h)
+      table.insert(next_s, next_c)
+      table.insert(next_s, next_h)
+      i[layer_idx] = next_h
+    end
+    local h2y              = nn.Linear(params.rnn_size, params.vocab_size)
+    local dropped          = nn.Dropout(params.dropout)(i[params.layers])
+    local pred             = nn.LogSoftMax()(h2y(dropped))
+    local err              = nn.ClassNLLCriterion()({pred, y})
+    local module           = nn.gModule({x, y, prev_s},
+                                        {err, nn.Identity()(next_s), pred})
+    module:getParameters():uniform(-params.init_weight, params.init_weight)
+    return transfer_data(module)
+  else
+    return torch.load(params.model)
   end
-  local h2y              = nn.Linear(params.rnn_size, params.vocab_size)
-  local dropped          = nn.Dropout(params.dropout)(i[params.layers])
-  local pred             = nn.LogSoftMax()(h2y(dropped))
-  local err              = nn.ClassNLLCriterion()({pred, y})
-  local module           = nn.gModule({x, y, prev_s},
-                                      {err, nn.Identity()(next_s), pred})
-  module:getParameters():uniform(-params.init_weight, params.init_weight)
-  return transfer_data(module)
 end
-
 
 model = {}
 
 function setup()
-  if params.mode == 'train' then
-    print("Creating a RNN LSTM network.")
-    local core_network = create_network()
-    paramx, paramdx = core_network:getParameters()
-    model.s = {}
-    model.ds = {}
-    model.start_s = {}
-    for j = 0, params.seq_length do
-      model.s[j] = {}
-      for d = 1, 2 * params.layers do
-        model.s[j][d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
-      end
-    end
+  print("Creating a RNN LSTM network.")
+  local core_network = create_network()
+  paramx, paramdx = core_network:getParameters()
+  model.s = {}
+  model.ds = {}
+  model.start_s = {}
+  for j = 0, params.seq_length do
+    model.s[j] = {}
     for d = 1, 2 * params.layers do
-      model.start_s[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
-      model.ds[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+      model.s[j][d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
     end
-    model.core_network = core_network
-    model.rnns = g_cloneManyTimes(core_network, params.seq_length)
-    model.norm_dw = 0
-    model.err = transfer_data(torch.zeros(params.seq_length))
-  else
-    model = torch.load(params.model)
   end
+  for d = 1, 2 * params.layers do
+    model.start_s[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+    model.ds[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+  end
+  model.core_network = core_network
+  model.rnns = g_cloneManyTimes(core_network, params.seq_length)
+  model.norm_dw = 0
+  model.err = transfer_data(torch.zeros(params.seq_length))
 end
 
 function reset_state(state)
@@ -262,17 +261,17 @@ end
 
 function complete_sequence(state)
   reset_state(state)
-  g_disable_dropout(model.rnns)
+  g_disable_dropout(model.core_network)
   g_replace_table(model.s[0], model.start_s)
   local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
   for i = 1, state.total_length-1 do
     local x = state.data[i]
     local y = state.data[i+1]
-    err, model.s[1], pred = unpack(model.rnns[i]:forward({x, y, model.s[0]}))
+    err, model.s[1], pred = unpack(model.rnns[1]:forward({x, y, model.s[0]}))
     g_replace_table(model.s[0], model.s[1])
     if i >= state.n_given then
-      _, idx = pred:max(2)
-      state.data[i+1]:fill(idx[1][1])
+      p = pred[1]
+      state.data[i+1]:fill(torch.multinomial(torch.exp(p),1)[1])
     end
   end
   g_enable_dropout(model.rnns)
@@ -289,7 +288,7 @@ function convert_input()
   state_query.line = line
   state_query.total_length = n_predict + n_given
   state_query.n_given = n_given
-  state_query.data = transfer_data(torch.zeros(state_query.total_length, params.batch_size))
+  state_query.data = transfer_data(torch.ones(state_query.total_length, params.batch_size))
   for i = 2, #line do
     local idx = ptb.lookup(line[i])
     state_query.data[i-1]:fill(idx)
@@ -323,8 +322,6 @@ function query_sentences()
 end
 
 
-print("Network parameters:")
-print(params)
 if not use_cpu then
   g_init_gpu(params.gpu_device)
 end
@@ -335,6 +332,8 @@ if params.mode == 'query' then
    tmp = nil
    query_sentences()
 elseif params.mode == 'train' then
+  print("Network parameters:")
+  print(params)
   state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
   state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
   state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
