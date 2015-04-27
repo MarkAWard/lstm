@@ -36,6 +36,9 @@ cmd = torch.CmdLine()
 cmd:text()
 cmd:text('Options:')
 cmd:text()
+cmd:option('-mode', 'train', 'train|test|query')
+cmd:option('-model', 'baseline.net')
+cmd:text()
 cmd:option('-layers', 2)
 cmd:option('-dropout', 0)
 cmd:option('-init_weight', 0.1)
@@ -144,26 +147,30 @@ end
 model = {}
 
 function setup()
-  print("Creating a RNN LSTM network.")
-  local core_network = create_network()
-  paramx, paramdx = core_network:getParameters()
-  model.s = {}
-  model.ds = {}
-  model.start_s = {}
-  for j = 0, params.seq_length do
-    model.s[j] = {}
-    for d = 1, 2 * params.layers do
-      model.s[j][d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+  if params.mode == 'train' then
+    print("Creating a RNN LSTM network.")
+    local core_network = create_network()
+    paramx, paramdx = core_network:getParameters()
+    model.s = {}
+    model.ds = {}
+    model.start_s = {}
+    for j = 0, params.seq_length do
+      model.s[j] = {}
+      for d = 1, 2 * params.layers do
+        model.s[j][d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+      end
     end
+    for d = 1, 2 * params.layers do
+      model.start_s[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+      model.ds[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
+    end
+    model.core_network = core_network
+    model.rnns = g_cloneManyTimes(core_network, params.seq_length)
+    model.norm_dw = 0
+    model.err = transfer_data(torch.zeros(params.seq_length))
+  else
+    model = torch.load(params.model)
   end
-  for d = 1, 2 * params.layers do
-    model.start_s[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
-    model.ds[d] = transfer_data(torch.zeros(params.batch_size, params.rnn_size))
-  end
-  model.core_network = core_network
-  model.rnns = g_cloneManyTimes(core_network, params.seq_length)
-  model.norm_dw = 0
-  model.err = transfer_data(torch.zeros(params.seq_length))
 end
 
 function reset_state(state)
@@ -223,24 +230,6 @@ function bp(state)
   paramx:add(paramdx:mul(-params.lr))
 end
 
-function complete_sequence(state)
-  reset_state(state)
-  g_disable_dropout(model.rnns)
-  g_replace_table(model.s[0], model.start_s)
-  local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
-  for i = 1, state.total_length-1 do
-    local x = state.data[i]
-    local y = state.data[i+1]
-    err, model.s[1], pred = unpack(model.rnns[i]:forward({x, y, model.s[0]}))
-    g_replace_table(model.s[0], model.s[1])
-    if i >= state.n_given then
-      _, idx = pred:max(2)
-      state.data[i+1]:fill(idx[1][1])
-    end
-  end
-  g_enable_dropout(model.rnns)
-end
-
 function run_valid()
   reset_state(state_valid)
   g_disable_dropout(model.rnns)
@@ -271,62 +260,127 @@ function run_test()
   g_enable_dropout(model.rnns)
 end
 
---function main()
+function complete_sequence(state)
+  reset_state(state)
+  g_disable_dropout(model.rnns)
+  g_replace_table(model.s[0], model.start_s)
+  local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
+  for i = 1, state.total_length-1 do
+    local x = state.data[i]
+    local y = state.data[i+1]
+    err, model.s[1], pred = unpack(model.rnns[i]:forward({x, y, model.s[0]}))
+    g_replace_table(model.s[0], model.s[1])
+    if i >= state.n_given then
+      _, idx = pred:max(2)
+      state.data[i+1]:fill(idx[1][1])
+    end
+  end
+  g_enable_dropout(model.rnns)
+end
+
+function convert_input()
+  local line = io.read("*line")
+  if line == nil then error({code="EOF"}) end
+  line = stringx.split(line)
+  if tonumber(line[1]) == nil then error({code="init"}) end
+  local n_predict = tonumber(line[1])
+  local n_given = #line - 1
+  state_query = {}
+  state_query.line = line
+  state_query.total_length = n_predict + n_given
+  state_query.n_given = n_given
+  state_query.data = transfer_data(torch.zeros(state_query.total_length, params.batch_size))
+  for i = 2, #line do
+    local idx = ptb.lookup(line[i])
+    state_query.data[i-1]:fill(idx)
+  end
+  return state_query
+end
+
+function query_sentences()
+  while true do
+    print("Query: len word1 word2 etc")
+    local ok, line = pcall(convert_input)
+    if not ok then
+      if line.code == "EOF" then
+        break -- end loop
+      elseif line.code == "init" then
+        print("Start with a number")
+      else
+        print(line.line)
+        print("Failed, try again")
+      end
+    else
+      complete_sequence(line)
+      for i = 1, line.total_length do 
+        if i <= line.n_given then io.write(line.line[i+1] .. ' ') 
+        else io.write(ptb.inverse_map[line.data[i][1]] .. ' ')
+      end
+      io.write('\n')
+    end
+  end
+end
+
+
+print("Network parameters:")
+print(params)
 if not use_cpu then
   g_init_gpu(params.gpu_device)
 end
-state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
-state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
-state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
-print("Network parameters:")
-print(params)
-local states = {state_train, state_valid, state_test}
-for _, state in pairs(states) do
- reset_state(state)
-end
 setup()
-step = 0
-epoch = 0
-total_cases = 0
-beginning_time = torch.tic()
-start_time = torch.tic()
-print("Starting training.")
-words_per_step = params.seq_length * params.batch_size
-epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
---perps
-while epoch < params.max_max_epoch do
- perp = fp(state_train)
- if perps == nil then
-   perps = torch.zeros(epoch_size):add(perp)
- end
- perps[step % epoch_size + 1] = perp
- step = step + 1
- bp(state_train)
- total_cases = total_cases + params.seq_length * params.batch_size
- epoch = step / epoch_size
- if step % torch.round(epoch_size / 10) == 10 then
-   wps = torch.floor(total_cases / torch.toc(start_time))
-   since_beginning = g_d(torch.toc(beginning_time) / 60)
-   print('epoch = ' .. g_f3(epoch) ..
-         ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
-         ', wps = ' .. wps ..
-         ', dw:norm() = ' .. g_f3(model.norm_dw) ..
-         ', lr = ' ..  g_f3(params.lr) ..
-         ', since beginning = ' .. since_beginning .. ' mins.')
- end
- if step % epoch_size == 0 then
-   run_valid()
-   if epoch > params.max_epoch then
-       params.lr = params.lr / params.decay
+
+if params.mode == 'query' then
+  query_sentences()
+elseif params.mode == 'train' then
+  state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
+  state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
+  state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
+  local states = {state_train, state_valid, state_test}
+  for _, state in pairs(states) do
+   reset_state(state)
+  end
+  step = 0
+  epoch = 0
+  total_cases = 0
+  beginning_time = torch.tic()
+  start_time = torch.tic()
+  print("Starting training.")
+  words_per_step = params.seq_length * params.batch_size
+  epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
+  --perps
+  while epoch < params.max_max_epoch do
+   perp = fp(state_train)
+   if perps == nil then
+     perps = torch.zeros(epoch_size):add(perp)
    end
- end
- if step % 33 == 0 then
-   if not use_cpu then 
-     cutorch.synchronize()
-    end
-   collectgarbage()
- end
+   perps[step % epoch_size + 1] = perp
+   step = step + 1
+   bp(state_train)
+   total_cases = total_cases + params.seq_length * params.batch_size
+   epoch = step / epoch_size
+   if step % torch.round(epoch_size / 10) == 10 then
+     wps = torch.floor(total_cases / torch.toc(start_time))
+     since_beginning = g_d(torch.toc(beginning_time) / 60)
+     print('epoch = ' .. g_f3(epoch) ..
+           ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
+           ', wps = ' .. wps ..
+           ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+           ', lr = ' ..  g_f3(params.lr) ..
+           ', since beginning = ' .. since_beginning .. ' mins.')
+   end
+   if step % epoch_size == 0 then
+     run_valid()
+     if epoch > params.max_epoch then
+         params.lr = params.lr / params.decay
+     end
+   end
+   if step % 33 == 0 then
+     if not use_cpu then 
+       cutorch.synchronize()
+      end
+     collectgarbage()
+   end
+  end
+  run_test()
+  print("Training is over.")
 end
-run_test()
-print("Training is over.")
---end
