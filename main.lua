@@ -317,7 +317,7 @@ function query_sentences()
         else io.write(ptb.inverse_map[line.data[i][1]] .. ' ')
 	end
       end
-      io.write('\n')
+      io.write('\n\n')
     end
   end
 end
@@ -331,7 +331,9 @@ end
 setup()
 
 if params.mode == 'query' then
-  query_sentences()
+   tmp = ptb.traindataset(params.batch_size)
+   tmp = nil
+   query_sentences()
 elseif params.mode == 'train' then
   state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
   state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
