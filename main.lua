@@ -31,12 +31,14 @@ end
 require('nngraph')
 require('base')
 ptb = require('data')
+stringx = require('pl.stringx')
+require 'io'
 
 cmd = torch.CmdLine()
 cmd:text()
 cmd:text('Options:')
 cmd:text()
-cmd:option('-mode', 'train', 'train|test|query')
+cmd:option('-mode', 'train', 'train|test|query|evaluate')
 cmd:option('-format', 'word', 'word|char')
 cmd:option('-model', 'baseline.net')
 cmd:text()
@@ -267,7 +269,6 @@ end
 
 function complete_sequence(state)
   reset_state(state)
-  g_disable_dropout(model.rnns)
   g_replace_table(model.s[0], model.start_s)
   local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
   for i = 1, state.total_length-1 do
@@ -280,7 +281,6 @@ function complete_sequence(state)
       state.data[i+1]:fill(torch.multinomial(torch.exp(p),1)[1])
     end
   end
-  g_enable_dropout(model.rnns)
 end
 
 function convert_input()
@@ -303,6 +303,7 @@ function convert_input()
 end
 
 function query_sentences()
+  g_disable_dropout(model.rnns)
   while true do
     print("Query: len word1 word2 etc")
     local ok, line = pcall(convert_input)
@@ -320,11 +321,65 @@ function query_sentences()
       for i = 1, line.total_length do 
         if i <= line.n_given then io.write(line.line[i+1] .. ' ') 
         else io.write(ptb.inverse_map[line.data[i][1]] .. ' ')
-	end
+        end
       end
       io.write('\n\n')
     end
   end
+end
+
+function next_char(state)
+  -- if state.pos > params.seq_length then
+  --   reset_state(state)
+  --   g_replace_table(model.s[0], model.start_s)
+  local pred = transfer_data(torch.zeros(params.batch_size, params.vocab_size))
+  local x = state.data[1]
+  local y = state.data[2]
+  err, model.s[1], pred = unpack(model.rnns[1]:forward({x, y, model.s[0]}))
+  g_replace_table(model.s[0], model.s[1])
+  return pred[1]
+end
+
+function readline()
+  local line = io.read("*line")
+  if line == nil then error({code="EOF"}) end
+  line = stringx.split(line)
+  if #line > 1 then error({code="char"}) end
+  if ptb.vocab_map[line[1]] == nil then error({code="vocab"}) end
+  return line
+end
+
+function evaluate_chars()
+  g_disable_dropout(model.rnns)
+  state_chars = {}
+  state_chars.data = transfer_data(torch.ones(2, params.batch_size))
+  state_chars.pos = 1
+  probs = transfer_data(torch.zeros(params.vocab_size))
+  io.write("OK GO")
+  while true do
+    io.flush()
+    local ok, line = pcall(readline)
+    if not ok then
+      if line.code == "EOF" then
+        break -- end loop
+      elseif line.code == "char" then
+        print("One character at a time please")
+      elseif line.code == "vocab" then
+        print("Character is not in the vocabulary")
+      else
+        print(line)
+        print("Failed, try again")
+      end
+    else
+      idx = ptb.vocab_map[line[1]]
+      state_chars.data[1]:fill(idx)
+      probs = next_char(state_chars)
+      for i = 1, #probs do 
+        io.write(probs[i] .. ' ')
+      end
+      io.write('\n')
+    end
+  end 
 end
 
 
@@ -338,6 +393,12 @@ if params.mode == 'query' then
    tmp = ptb.traindataset(params.batch_size)
    tmp = nil
    query_sentences()
+
+elseif params.mode == 'evaluate' then
+
+  tmp = ptb.traindataset(params.batch_size, true)
+  tmp = nil
+  evaluate_chars()
 
 elseif params.mode == 'train' then
 
