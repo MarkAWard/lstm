@@ -23,6 +23,14 @@ local vocab_idx = 0
 local vocab_map = {}
 local inverse_map = {}
 
+local function lookup(inp)
+  local idx = vocab_map[inp]
+  if idx == nil then
+    idx = vocab_map['<unk>']
+  end
+  return idx
+end
+
 -- Stacks replicated, shifted versions of x_inp
 -- into a single matrix of size x_inp:size(1) x batch_size.
 local function replicate(x_inp, batch_size)
@@ -79,4 +87,5 @@ return {traindataset=traindataset,
         testdataset=testdataset,
         validdataset=validdataset,
         vocab_map=vocab_map,
-        inverse_map=inverse_map}
+        inverse_map=inverse_map,
+        lookup=lookup}
