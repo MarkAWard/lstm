@@ -315,6 +315,7 @@ function query_sentences()
       for i = 1, line.total_length do 
         if i <= line.n_given then io.write(line.line[i+1] .. ' ') 
         else io.write(ptb.inverse_map[line.data[i][1]] .. ' ')
+	end
       end
       io.write('\n')
     end
