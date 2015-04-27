@@ -38,7 +38,7 @@ for i in range(len(evaltxt)-1):
     try:
         logprobs = map(float, proc.stdout.readline().split())
         assert len(logprobs) == len(vocab_map), "Unexpected response length %d"%len(logprobs)
-        np.testing.assert_almost_equal(np.exp(logprobs).sum(), 1, decimal=4, err_msg="Nice try :)")
+        np.testing.assert_almost_equal(np.exp(logprobs).sum(), 1, decimal=3, err_msg="Nice try :)")
         nll -= logprobs[vocab_map[evaltxt[i+1]]]
     except Exception as e:
         fails += 1

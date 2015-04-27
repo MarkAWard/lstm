@@ -58,7 +58,7 @@ cmd:option('-max_epoch', 4)
 cmd:option('-max_max_epoch', 13)
 cmd:option('-max_grad_norm', 5)
 cmd:text()
-cmd:option('-gpu_device', 4)
+cmd:option('-gpu_device', 1)
 cmd:text()
 
 params = cmd:parse(arg or {})
@@ -285,7 +285,7 @@ function complete_sequence(state)
     g_replace_table(model.s[0], model.s[1])
     if i >= state.n_given then
       p = pred[1]
-      state.data[i+1]:fill(torch.multinomial(torch.exp(p),1)[1])
+      state.data[i+1]:fill(torch.multinomial(torch.exp(p:float()),1)[1])
     end
   end
 end
@@ -387,7 +387,7 @@ function evaluate_chars()
       idx = ptb.vocab_map[line[1]]
       state_chars.data[1]:fill(idx)
       probs = next_char(state_chars)
-      probs = normalize(probs)
+--      probs = normalize(probs)
       for i = 1, params.vocab_size do 
         io.write(probs[i] .. ' ')
       end
