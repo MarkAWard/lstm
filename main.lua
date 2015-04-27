@@ -389,6 +389,7 @@ elseif params.mode == 'train' then
     end
     if step % epoch_size == 0 then
       run_valid()
+      torch.save(params.model, model.core_network)
       if epoch > params.max_epoch then
         params.lr = params.lr / params.decay
       end
@@ -404,4 +405,5 @@ elseif params.mode == 'train' then
     run_test()
   end
   print("Training is over.")
+  torch.save(params.model, model.core_network)
 end
