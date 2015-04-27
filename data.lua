@@ -23,6 +23,7 @@ local vocab_idx = 0
 local vocab_map = {}
 local inverse_map = {}
 
+-- get the index for a word or <unk>
 local function lookup(inp)
   local idx = vocab_map[inp]
   if idx == nil then
@@ -54,6 +55,7 @@ local function load_data(fname)
       if vocab_map[data[i]] == nil then
          vocab_idx = vocab_idx + 1
          vocab_map[data[i]] = vocab_idx
+         -- create the inverse mapping as well
          inverse_map[vocab_idx] = data[i]
       end
       x[i] = vocab_map[data[i]]
