@@ -37,15 +37,16 @@ cmd:text()
 cmd:text('Options:')
 cmd:text()
 cmd:option('-mode', 'train', 'train|test|query')
+cmd:option('-format', 'word', 'word|char')
 cmd:option('-model', 'baseline.net')
-cmd:text()
-cmd:option('-layers', 2)
-cmd:option('-dropout', 0)
-cmd:option('-init_weight', 0.1)
 cmd:text()
 cmd:option('-vocab_size', 10000)
 cmd:option('-seq_length', 20)
 cmd:option('-rnn_size', 200)
+cmd:text()
+cmd:option('-layers', 2)
+cmd:option('-dropout', 0)
+cmd:option('-init_weight', 0.1)
 cmd:text()
 cmd:option('-batch_size', 20)
 cmd:option('-lr', 1)
@@ -237,7 +238,12 @@ function run_valid()
   for i = 1, len do
     perp = perp + fp(state_valid)
   end
-  print("Validation set perplexity : " .. g_f3(torch.exp(perp / len)))
+  if params.format == 'char' then
+    mult = 5.6
+  else
+    mult = 1.0
+  end
+  print("Validation set perplexity : " .. g_f3(torch.exp( mult * (perp / len) )))
   g_enable_dropout(model.rnns)
 end
 
@@ -255,7 +261,7 @@ function run_test()
     perp = perp + perp_tmp[1]
     g_replace_table(model.s[0], model.s[1])
   end
-  print("Test set perplexity : " .. g_f3(torch.exp(perp / (len - 1))))
+  print("Test set perplexity : " .. g_f3(torch.exp(perp / (len - 1) )))
   g_enable_dropout(model.rnns)
 end
 
@@ -328,15 +334,23 @@ end
 setup()
 
 if params.mode == 'query' then
+
    tmp = ptb.traindataset(params.batch_size)
    tmp = nil
    query_sentences()
+
 elseif params.mode == 'train' then
+
   print("Network parameters:")
   print(params)
-  state_train = {data=transfer_data(ptb.traindataset(params.batch_size))}
-  state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size))}
-  state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
+  if params.format == 'char' then char = true end
+  state_train = {data=transfer_data(ptb.traindataset(params.batch_size, char))}
+  state_valid =  {data=transfer_data(ptb.validdataset(params.batch_size, char))}
+  if params.format == 'word' then
+    state_test =  {data=transfer_data(ptb.testdataset(params.batch_size))}
+  else
+    state_test = {}
+  end
   local states = {state_train, state_valid, state_test}
   for _, state in pairs(states) do
    reset_state(state)
@@ -344,45 +358,50 @@ elseif params.mode == 'train' then
   step = 0
   epoch = 0
   total_cases = 0
-  beginning_time = torch.tic()
-  start_time = torch.tic()
-  print("Starting training.")
+  mult = 1.0
+  if params.format == 'char' then mult = 5.6 end
   words_per_step = params.seq_length * params.batch_size
   epoch_size = torch.floor(state_train.data:size(1) / params.seq_length)
-  --perps
+
+  print("Starting training.")
+  beginning_time = torch.tic()
+  start_time = torch.tic()
+
   while epoch < params.max_max_epoch do
-   perp = fp(state_train)
-   if perps == nil then
-     perps = torch.zeros(epoch_size):add(perp)
-   end
-   perps[step % epoch_size + 1] = perp
-   step = step + 1
-   bp(state_train)
-   total_cases = total_cases + params.seq_length * params.batch_size
-   epoch = step / epoch_size
-   if step % torch.round(epoch_size / 10) == 10 then
-     wps = torch.floor(total_cases / torch.toc(start_time))
-     since_beginning = g_d(torch.toc(beginning_time) / 60)
-     print('epoch = ' .. g_f3(epoch) ..
-           ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
-           ', wps = ' .. wps ..
-           ', dw:norm() = ' .. g_f3(model.norm_dw) ..
-           ', lr = ' ..  g_f3(params.lr) ..
-           ', since beginning = ' .. since_beginning .. ' mins.')
-   end
-   if step % epoch_size == 0 then
-     run_valid()
-     if epoch > params.max_epoch then
-         params.lr = params.lr / params.decay
-     end
-   end
-   if step % 33 == 0 then
-     if not use_cpu then 
-       cutorch.synchronize()
+    perp = fp(state_train)
+    if perps == nil then
+      perps = torch.zeros(epoch_size):add(perp)
+    end
+    perps[step % epoch_size + 1] = perp
+    step = step + 1
+    bp(state_train)
+    total_cases = total_cases + params.seq_length * params.batch_size
+    epoch = step / epoch_size
+    if step % torch.round(epoch_size / 10) == 10 then
+      wps = torch.floor(total_cases / torch.toc(start_time))
+      since_beginning = g_d(torch.toc(beginning_time) / 60)
+      print('epoch = ' .. g_f3(epoch) ..
+            ', train perp. = ' .. g_f3(torch.exp( mult * perps:mean() )) ..
+            ', wps = ' .. wps ..
+            ', dw:norm() = ' .. g_f3(model.norm_dw) ..
+            ', lr = ' ..  g_f3(params.lr) ..
+            ', since beginning = ' .. since_beginning .. ' mins.')
+    end
+    if step % epoch_size == 0 then
+      run_valid()
+      if epoch > params.max_epoch then
+        params.lr = params.lr / params.decay
       end
-     collectgarbage()
-   end
+    end
+    if step % 33 == 0 then
+      if not use_cpu then 
+        cutorch.synchronize()
+      end
+      collectgarbage()
+    end
   end
-  run_test()
+  if params.format == 'word' then
+    run_test()
+  end
   print("Training is over.")
 end
