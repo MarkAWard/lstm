@@ -1,0 +1,19 @@
+maw627
+/scratch/ts2387/a4/maw627
+tput: No value for $TERM and no -T specified
+Flushing proc output until OK GO received
+ --  [0mwarning: fbcunn not found. Falling back to cunn[0m
+ --  [0mUsing 1-th gpu[0m
+ --  [0mCreating a RNN LSTM network.[0m
+ --  OK GO
+Start test loop
+0	Perplexity: 1861257.700952	avgnll: 2.577993	fails: 0
+1000	Perplexity: 739.459319	avgnll: 1.179628	fails: 0
+2000	Perplexity: 621.673032	avgnll: 1.148645	fails: 0
+3000	Perplexity: 696.324685	avgnll: 1.168896	fails: 0
+4000	Perplexity: 658.341246	avgnll: 1.158879	fails: 0
+5000	Perplexity: 682.729573	avgnll: 1.165375	fails: 0
+6000	Perplexity: 665.924694	avgnll: 1.160924	fails: 0
+7000	Perplexity: 659.173597	avgnll: 1.159105	fails: 0
+8000	Perplexity: 565.056869	avgnll: 1.131594	fails: 0
+9000	Perplexity: 494.476904	avgnll: 1.107768	fails: 0

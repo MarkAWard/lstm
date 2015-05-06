@@ -1,0 +1,12 @@
+Generated char level test data? (would be a grave error)
+
+cd maw627; git log --pretty=format:"%an, %ad : %s" -4
+Mark Ward, Mon Apr 27 17:58:17 2015 -0400 : th
+Mark Ward, Mon Apr 27 17:36:22 2015 -0400 : back to th
+Mark Ward, Mon Apr 27 15:00:41 2015 -0400 : torch deps
+Mark Ward, Mon Apr 27 13:57:09 2015 -0500 : luajit
+
+cd maw627; git log --pretty=format:"%ad" -1
+Mon Apr 27 17:58:17 2015 -0400
+
+Last commit is in time
